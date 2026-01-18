@@ -73,6 +73,9 @@ python -m paper_search_mcp.server
 - All searchers should return `Paper` objects or lists of `Paper` objects
 - Use the `Paper` class defined in `paper.py` for consistent data structure
 - Async functions should use `async/await` syntax properly
+- Use relative imports within the package: `from ..paper import Paper` (from academic_platforms/)
+- Platform searchers use `requests` library synchronously
+- Server.py wraps synchronous operations in async context using `httpx`
 
 ### Testing Requirements
 - Each platform searcher should have a corresponding test file in `tests/`
@@ -186,11 +189,27 @@ if __name__ == '__main__':
 
 ## Common Patterns
 
-### Using httpx for async operations
+### Platform searchers use requests synchronously
 ```python
-async with httpx.AsyncClient() as client:
-    response = await client.get(url)
-    return response.json()
+import requests
+from typing import List
+
+def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    """Search implementation using requests."""
+    response = requests.get(self.BASE_URL, params={'q': query})
+    response.raise_for_status()
+    # Process response
+    return papers
+```
+
+### Server wraps synchronous searchers in async context
+```python
+# In server.py, httpx is used as async wrapper
+async def async_search(searcher, query: str, max_results: int, **kwargs) -> List[Dict]:
+    async with httpx.AsyncClient() as client:
+        # Searchers use requests internally
+        papers = searcher.search(query, max_results=max_results)
+        return [paper.to_dict() for paper in papers]
 ```
 
 ### Paper object creation
@@ -212,6 +231,8 @@ paper = Paper(
 
 ### Error handling in searchers
 ```python
+import requests
+
 try:
     response = requests.get(url, timeout=10)
     response.raise_for_status()
