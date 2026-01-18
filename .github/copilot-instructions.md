@@ -10,10 +10,13 @@ This is a Model Context Protocol (MCP) server for searching and downloading acad
 - httpx for async HTTP requests
 - BeautifulSoup4 and lxml for HTML parsing
 - unittest for testing
+- typer for CLI
+- rich for enhanced terminal output
 
 **Project Structure:**
 - `paper_search_mcp/` - Main package directory
   - `server.py` - MCP server implementation with tool definitions
+  - `cli.py` - Command-line interface using typer
   - `paper.py` - Paper data model class
   - `academic_platforms/` - Platform-specific searcher implementations
 - `tests/` - Unit tests for each platform and the server
@@ -30,6 +33,21 @@ uv add -e .
 
 # Or using pip
 pip install -e .
+```
+
+**Using the CLI:**
+```bash
+# Search for papers
+paper-search search "machine learning" --source arxiv --max-results 10
+
+# Download a paper
+paper-search download 2106.12345 --source arxiv --output ./downloads
+
+# Read paper text
+paper-search read 2106.12345 --source arxiv
+
+# List available sources
+paper-search list-sources
 ```
 
 **Running tests:**
@@ -72,10 +90,11 @@ python -m paper_search_mcp.server
 - Each academic platform should have its own module in `academic_platforms/`
 - All searchers should return `Paper` objects or lists of `Paper` objects
 - Use the `Paper` class defined in `paper.py` for consistent data structure
-- Async functions should use `async/await` syntax properly
+- All searcher methods (search, download_pdf, read_paper) are async and use httpx
 - Use relative imports within the package: `from ..paper import Paper` (from academic_platforms/)
-- Platform searchers use `requests` library synchronously
-- Server.py wraps synchronous operations in async context using `httpx`
+- Platform searchers use `httpx` library with async/await pattern
+- Server.py uses FastMCP framework to expose async searcher methods as MCP tools
+- CLI module uses typer to provide command-line interface to all search/download functions
 
 ### Testing Requirements
 - Each platform searcher should have a corresponding test file in `tests/`
@@ -113,7 +132,7 @@ When adding a new academic platform searcher:
 # academic_platforms/example.py
 from typing import List
 from datetime import datetime
-import requests
+import httpx
 from ..paper import Paper
 
 class ExampleSearcher:
@@ -123,7 +142,7 @@ class ExampleSearcher:
         self.api_key = api_key
         self.base_url = "https://api.example.com"
     
-    def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    async def search(self, query: str, max_results: int = 10) -> List[Paper]:
         """
         Search for papers on Example Platform.
         
@@ -134,9 +153,40 @@ class ExampleSearcher:
         Returns:
             List of Paper objects
         """
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                self.base_url,
+                params={'q': query, 'limit': max_results}
+            )
+            response.raise_for_status()
+            data = response.json()
+            
         papers = []
-        # Implementation here
+        for item in data['results']:
+            papers.append(Paper(
+                paper_id=item['id'],
+                title=item['title'],
+                authors=item['authors'],
+                abstract=item['abstract'],
+                doi=item.get('doi', ''),
+                published_date=datetime.fromisoformat(item['date']),
+                pdf_url=item.get('pdf_url', ''),
+                url=item['url'],
+                source='example'
+            ))
         return papers
+    
+    async def download_pdf(self, paper_id: str, save_path: str) -> str:
+        """Download PDF for a paper."""
+        pdf_url = f"{self.base_url}/papers/{paper_id}/pdf"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(pdf_url)
+            response.raise_for_status()
+        
+        output_file = f"{save_path}/{paper_id}.pdf"
+        with open(output_file, 'wb') as f:
+            f.write(response.content)
+        return output_file
 ```
 
 ### Example: MCP Tool Definition
@@ -189,29 +239,45 @@ if __name__ == '__main__':
 
 ## Common Patterns
 
-### Platform searchers use requests synchronously
+### Platform searchers use httpx with async/await
 ```python
-import requests
+import httpx
 from typing import List
 
-def search(self, query: str, max_results: int = 10) -> List[Paper]:
-    """Search implementation using requests."""
-    response = requests.get(self.BASE_URL, params={'q': query})
-    response.raise_for_status()
-    # Process response
+async def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    """Search implementation using httpx."""
+    async with httpx.AsyncClient() as client:
+        response = await client.get(self.BASE_URL, params={'q': query})
+        response.raise_for_status()
+        # Process response
     return papers
 ```
 
-### Server wraps synchronous searchers in async context
+### Server exposes async searchers as MCP tools
 ```python
-# In server.py, httpx is used as async wrapper
-# Note: The httpx.AsyncClient context is currently not actively used
-# but provides the async context for future enhancements
+# In server.py
 async def async_search(searcher, query: str, max_results: int, **kwargs) -> List[Dict]:
-    async with httpx.AsyncClient() as client:
-        # Searchers use requests internally (synchronous calls)
-        papers = searcher.search(query, max_results=max_results)
-        return [paper.to_dict() for paper in papers]
+    # Searchers now use httpx internally and are async
+    papers = await searcher.search(query, max_results=max_results)
+    return [paper.to_dict() for paper in papers]
+
+@mcp.tool()
+async def search_arxiv(query: str, max_results: int = 10) -> List[Dict]:
+    """Search academic papers from arXiv."""
+    return await async_search(arxiv_searcher, query, max_results)
+```
+
+### CLI commands use asyncio to run async functions
+```python
+# In cli.py
+@app.command()
+def search(query: str, source: str = "arxiv", max_results: int = 10):
+    """Search for papers."""
+    async def run_search():
+        papers = await searcher.search(query, max_results=max_results)
+        display_papers(papers, source)
+    
+    asyncio.run(run_search())
 ```
 
 ### Paper object creation
@@ -233,14 +299,17 @@ paper = Paper(
 
 ### Error handling in searchers
 ```python
-import requests
+import httpx
 
-try:
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-except requests.RequestException as e:
-    print(f"Error fetching data: {e}")
-    return []
+async def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=10.0)
+            response.raise_for_status()
+            # Process response
+    except httpx.HTTPError as e:
+        print(f"Error fetching data: {e}")
+        return []
 ```
 
 ## Documentation
@@ -265,6 +334,17 @@ When adding new dependencies:
 2. Run `uv add <package>` to update lock file
 3. Document why the dependency is needed
 4. Prefer lightweight, well-maintained packages
+
+**Current key dependencies:**
+- `httpx[socks]>=0.28.1` - Async HTTP client for all network requests
+- `fastmcp` - FastMCP framework for MCP server
+- `mcp[cli]>=1.6.0` - MCP Python SDK
+- `typer>=0.9.0` - CLI framework
+- `rich>=13.0.0` - Enhanced terminal output
+- `feedparser` - RSS/Atom feed parsing (for arXiv)
+- `beautifulsoup4>=4.12.0` - HTML parsing
+- `lxml>=4.9.0` - XML/HTML parser
+- `PyPDF2>=3.0.0` - PDF text extraction
 
 ## Version Management
 
