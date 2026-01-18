@@ -1,7 +1,7 @@
 # paper_search_mcp/sources/arxiv.py
 from typing import List
 from datetime import datetime
-import requests
+import httpx
 import feedparser
 from ..paper import Paper
 from PyPDF2 import PdfReader
@@ -9,27 +9,29 @@ import os
 
 class PaperSource:
     """Abstract base class for paper sources"""
-    def search(self, query: str, **kwargs) -> List[Paper]:
+    async def search(self, query: str, **kwargs) -> List[Paper]:
         raise NotImplementedError
 
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
+    async def download_pdf(self, paper_id: str, save_path: str) -> str:
         raise NotImplementedError
 
-    def read_paper(self, paper_id: str, save_path: str) -> str:
+    async def read_paper(self, paper_id: str, save_path: str) -> str:
         raise NotImplementedError
 
 class ArxivSearcher(PaperSource):
     """Searcher for arXiv papers"""
     BASE_URL = "http://export.arxiv.org/api/query"
 
-    def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    async def search(self, query: str, max_results: int = 10) -> List[Paper]:
         params = {
             'search_query': query,
             'max_results': max_results,
             'sortBy': 'submittedDate',
             'sortOrder': 'descending'
         }
-        response = requests.get(self.BASE_URL, params=params)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(self.BASE_URL, params=params)
+            response.raise_for_status()
         feed = feedparser.parse(response.content)
         papers = []
         for entry in feed.entries:
@@ -56,15 +58,17 @@ class ArxivSearcher(PaperSource):
                 print(f"Error parsing arXiv entry: {e}")
         return papers
 
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
+    async def download_pdf(self, paper_id: str, save_path: str) -> str:
         pdf_url = f"https://arxiv.org/pdf/{paper_id}.pdf"
-        response = requests.get(pdf_url)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(pdf_url)
+            response.raise_for_status()
         output_file = f"{save_path}/{paper_id}.pdf"
         with open(output_file, 'wb') as f:
             f.write(response.content)
         return output_file
 
-    def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
+    async def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """Read a paper and convert it to text format.
         
         Args:
@@ -77,7 +81,7 @@ class ArxivSearcher(PaperSource):
         # First ensure we have the PDF
         pdf_path = f"{save_path}/{paper_id}.pdf"
         if not os.path.exists(pdf_path):
-            pdf_path = self.download_pdf(paper_id, save_path)
+            pdf_path = await self.download_pdf(paper_id, save_path)
         
         # Read the PDF
         try:
@@ -94,41 +98,47 @@ class ArxivSearcher(PaperSource):
             return ""
 
 if __name__ == "__main__":
-    # 测试 ArxivSearcher 的功能
-    searcher = ArxivSearcher()
+    import asyncio
     
-    # 测试搜索功能
-    print("Testing search functionality...")
-    query = "machine learning"
-    max_results = 5
-    try:
-        papers = searcher.search(query, max_results=max_results)
-        print(f"Found {len(papers)} papers for query '{query}':")
-        for i, paper in enumerate(papers, 1):
-            print(f"{i}. {paper.title} (ID: {paper.paper_id})")
-    except Exception as e:
-        print(f"Error during search: {e}")
-    
-    # 测试 PDF 下载功能
-    if papers:
-        print("\nTesting PDF download functionality...")
-        paper_id = papers[0].paper_id
-        save_path = "./downloads"  # 确保此目录存在
+    async def test_arxiv():
+        # 测试 ArxivSearcher 的功能
+        searcher = ArxivSearcher()
+        
+        # 测试搜索功能
+        print("Testing search functionality...")
+        query = "machine learning"
+        max_results = 5
         try:
-            os.makedirs(save_path, exist_ok=True)
-            pdf_path = searcher.download_pdf(paper_id, save_path)
-            print(f"PDF downloaded successfully: {pdf_path}")
+            papers = await searcher.search(query, max_results=max_results)
+            print(f"Found {len(papers)} papers for query '{query}':")
+            for i, paper in enumerate(papers, 1):
+                print(f"{i}. {paper.title} (ID: {paper.paper_id})")
         except Exception as e:
-            print(f"Error during PDF download: {e}")
+            print(f"Error during search: {e}")
+            return
+        
+        # 测试 PDF 下载功能
+        if papers:
+            print("\nTesting PDF download functionality...")
+            paper_id = papers[0].paper_id
+            save_path = "./downloads"  # 确保此目录存在
+            try:
+                os.makedirs(save_path, exist_ok=True)
+                pdf_path = await searcher.download_pdf(paper_id, save_path)
+                print(f"PDF downloaded successfully: {pdf_path}")
+            except Exception as e:
+                print(f"Error during PDF download: {e}")
 
-    # 测试论文阅读功能
-    if papers:
-        print("\nTesting paper reading functionality...")
-        paper_id = papers[0].paper_id
-        try:
-            text_content = searcher.read_paper(paper_id)
-            print(f"\nFirst 500 characters of the paper content:")
-            print(text_content[:500] + "...")
-            print(f"\nTotal length of extracted text: {len(text_content)} characters")
-        except Exception as e:
-            print(f"Error during paper reading: {e}")
+        # 测试论文阅读功能
+        if papers:
+            print("\nTesting paper reading functionality...")
+            paper_id = papers[0].paper_id
+            try:
+                text_content = await searcher.read_paper(paper_id)
+                print(f"\nFirst 500 characters of the paper content:")
+                print(text_content[:500] + "...")
+                print(f"\nTotal length of extracted text: {len(text_content)} characters")
+            except Exception as e:
+                print(f"Error during paper reading: {e}")
+    
+    asyncio.run(test_arxiv())

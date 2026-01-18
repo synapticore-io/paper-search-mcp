@@ -1,7 +1,6 @@
 # paper_search_mcp/server.py
 from typing import List, Dict, Optional
-import httpx
-from mcp.server.fastmcp import FastMCP
+from fastmcp import FastMCP
 from .academic_platforms.arxiv import ArxivSearcher
 from .academic_platforms.pubmed import PubMedSearcher
 from .academic_platforms.biorxiv import BioRxivSearcher
@@ -29,15 +28,14 @@ crossref_searcher = CrossRefSearcher()
 # scihub_searcher = SciHubSearcher()
 
 
-# Asynchronous helper to adapt synchronous searchers
+# Asynchronous helper to adapt async searchers
 async def async_search(searcher, query: str, max_results: int, **kwargs) -> List[Dict]:
-    async with httpx.AsyncClient() as client:
-        # Assuming searchers use requests internally; we'll call synchronously for now
-        if 'year' in kwargs:
-            papers = searcher.search(query, year=kwargs['year'], max_results=max_results)
-        else:
-            papers = searcher.search(query, max_results=max_results)
-        return [paper.to_dict() for paper in papers]
+    # Searchers now use httpx internally and are async
+    if 'year' in kwargs:
+        papers = await searcher.search(query, year=kwargs['year'], max_results=max_results)
+    else:
+        papers = await searcher.search(query, max_results=max_results)
+    return [paper.to_dict() for paper in papers]
 
 
 # Tool definitions
@@ -139,8 +137,7 @@ async def download_arxiv(paper_id: str, save_path: str = "./downloads") -> str:
     Returns:
         Path to the downloaded PDF file.
     """
-    async with httpx.AsyncClient() as client:
-        return arxiv_searcher.download_pdf(paper_id, save_path)
+    return await arxiv_searcher.download_pdf(paper_id, save_path)
 
 
 @mcp.tool()
@@ -154,7 +151,7 @@ async def download_pubmed(paper_id: str, save_path: str = "./downloads") -> str:
         str: Message indicating that direct PDF download is not supported.
     """
     try:
-        return pubmed_searcher.download_pdf(paper_id, save_path)
+        return await pubmed_searcher.download_pdf(paper_id, save_path)
     except NotImplementedError as e:
         return str(e)
 
@@ -169,7 +166,7 @@ async def download_biorxiv(paper_id: str, save_path: str = "./downloads") -> str
     Returns:
         Path to the downloaded PDF file.
     """
-    return biorxiv_searcher.download_pdf(paper_id, save_path)
+    return await biorxiv_searcher.download_pdf(paper_id, save_path)
 
 
 @mcp.tool()
@@ -182,7 +179,7 @@ async def download_medrxiv(paper_id: str, save_path: str = "./downloads") -> str
     Returns:
         Path to the downloaded PDF file.
     """
-    return medrxiv_searcher.download_pdf(paper_id, save_path)
+    return await medrxiv_searcher.download_pdf(paper_id, save_path)
 
 
 @mcp.tool()
@@ -195,7 +192,7 @@ async def download_iacr(paper_id: str, save_path: str = "./downloads") -> str:
     Returns:
         Path to the downloaded PDF file.
     """
-    return iacr_searcher.download_pdf(paper_id, save_path)
+    return await iacr_searcher.download_pdf(paper_id, save_path)
 
 
 @mcp.tool()
@@ -209,7 +206,7 @@ async def read_arxiv_paper(paper_id: str, save_path: str = "./downloads") -> str
         str: The extracted text content of the paper.
     """
     try:
-        return arxiv_searcher.read_paper(paper_id, save_path)
+        return await arxiv_searcher.read_paper(paper_id, save_path)
     except Exception as e:
         print(f"Error reading paper {paper_id}: {e}")
         return ""
@@ -225,7 +222,7 @@ async def read_pubmed_paper(paper_id: str, save_path: str = "./downloads") -> st
     Returns:
         str: Message indicating that direct paper reading is not supported.
     """
-    return pubmed_searcher.read_paper(paper_id, save_path)
+    return await pubmed_searcher.read_paper(paper_id, save_path)
 
 
 @mcp.tool()
@@ -315,7 +312,7 @@ async def download_semantic(paper_id: str, save_path: str = "./downloads") -> st
     Returns:
         Path to the downloaded PDF file.
     """ 
-    return semantic_searcher.download_pdf(paper_id, save_path)
+    return await semantic_searcher.download_pdf(paper_id, save_path)
 
 
 @mcp.tool()
@@ -337,7 +334,7 @@ async def read_semantic_paper(paper_id: str, save_path: str = "./downloads") -> 
         str: The extracted text content of the paper.
     """
     try:
-        return semantic_searcher.read_paper(paper_id, save_path)
+        return await semantic_searcher.read_paper(paper_id, save_path)
     except Exception as e:
         print(f"Error reading paper {paper_id}: {e}")
         return ""
@@ -408,7 +405,7 @@ async def download_crossref(paper_id: str, save_path: str = "./downloads") -> st
         Use the DOI to access the paper through the publisher's website.
     """
     try:
-        return crossref_searcher.download_pdf(paper_id, save_path)
+        return await crossref_searcher.download_pdf(paper_id, save_path)
     except NotImplementedError as e:
         return str(e)
 
@@ -427,7 +424,7 @@ async def read_crossref_paper(paper_id: str, save_path: str = "./downloads") -> 
         CrossRef is a citation database and doesn't provide direct paper content.
         Use the DOI to access the paper through the publisher's website.
     """
-    return crossref_searcher.read_paper(paper_id, save_path)
+    return await crossref_searcher.read_paper(paper_id, save_path)
 
 
 if __name__ == "__main__":

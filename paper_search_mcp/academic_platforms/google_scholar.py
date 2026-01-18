@@ -1,6 +1,6 @@
 from typing import List, Optional
 from datetime import datetime
-import requests
+import httpx
 from bs4 import BeautifulSoup
 import time
 import random
@@ -32,16 +32,11 @@ class GoogleScholarSearcher(PaperSource):
     ]
 
     def __init__(self):
-        self._setup_session()
-
-    def _setup_session(self):
-        """Initialize session with random user agent"""
-        self.session = requests.Session()
-        self.session.headers.update({
+        self.headers = {
             'User-Agent': random.choice(self.BROWSERS),
             'Accept': 'text/html,application/xhtml+xml',
             'Accept-Language': 'en-US,en;q=0.9'
-        })
+        }
 
     def _extract_year(self, text: str) -> Optional[int]:
         """Extract year from publication info"""
@@ -91,7 +86,7 @@ class GoogleScholarSearcher(PaperSource):
             logger.warning(f"Failed to parse paper: {e}")
             return None
 
-    def search(self, query: str, max_results: int = 10) -> List[Paper]:
+    async def search(self, query: str, max_results: int = 10) -> List[Paper]:
         """
         Search Google Scholar with custom parameters
         """
@@ -99,45 +94,46 @@ class GoogleScholarSearcher(PaperSource):
         start = 0
         results_per_page = min(10, max_results)
 
-        while len(papers) < max_results:
-            try:
-                # Construct search parameters
-                params = {
-                    'q': query,
-                    'start': start,
-                    'hl': 'en',
-                    'as_sdt': '0,5'  # Include articles and citations
-                }
+        async with httpx.AsyncClient() as client:
+            while len(papers) < max_results:
+                try:
+                    # Construct search parameters
+                    params = {
+                        'q': query,
+                        'start': start,
+                        'hl': 'en',
+                        'as_sdt': '0,5'  # Include articles and citations
+                    }
 
-                # Make request with random delay
-                time.sleep(random.uniform(1.0, 3.0))
-                response = self.session.get(self.SCHOLAR_URL, params=params)
-                
-                if response.status_code != 200:
-                    logger.error(f"Search failed with status {response.status_code}")
-                    break
-
-                # Parse results
-                soup = BeautifulSoup(response.text, 'html.parser')
-                results = soup.find_all('div', class_='gs_ri')
-
-                if not results:
-                    break
-
-                # Process each result
-                for item in results:
-                    if len(papers) >= max_results:
+                    # Make request with random delay
+                    time.sleep(random.uniform(1.0, 3.0))
+                    response = await client.get(self.SCHOLAR_URL, params=params, headers=self.headers)
+                    
+                    if response.status_code != 200:
+                        logger.error(f"Search failed with status {response.status_code}")
                         break
-                        
-                    paper = self._parse_paper(item)
-                    if paper:
-                        papers.append(paper)
 
-                start += results_per_page
+                    # Parse results
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    results = soup.find_all('div', class_='gs_ri')
 
-            except Exception as e:
-                logger.error(f"Search error: {e}")
-                break
+                    if not results:
+                        break
+
+                    # Process each result
+                    for item in results:
+                        if len(papers) >= max_results:
+                            break
+                            
+                        paper = self._parse_paper(item)
+                        if paper:
+                            papers.append(paper)
+
+                    start += results_per_page
+
+                except Exception as e:
+                    logger.error(f"Search error: {e}")
+                    break
 
         return papers[:max_results]
 
@@ -166,20 +162,25 @@ class GoogleScholarSearcher(PaperSource):
         )
 
 if __name__ == "__main__":
-    # Test Google Scholar searcher
-    searcher = GoogleScholarSearcher()
+    import asyncio
     
-    print("Testing search functionality...")
-    query = "machine learning"
-    max_results = 5
+    async def main():
+        # Test Google Scholar searcher
+        searcher = GoogleScholarSearcher()
+        
+        print("Testing search functionality...")
+        query = "machine learning"
+        max_results = 5
+        
+        try:
+            papers = await searcher.search(query, max_results=max_results)
+            print(f"\nFound {len(papers)} papers for query '{query}':")
+            for i, paper in enumerate(papers, 1):
+                print(f"\n{i}. {paper.title}")
+                print(f"   Authors: {', '.join(paper.authors)}")
+                print(f"   Citations: {paper.citations}")
+                print(f"   URL: {paper.url}")
+        except Exception as e:
+            print(f"Error during search: {e}")
     
-    try:
-        papers = searcher.search(query, max_results=max_results)
-        print(f"\nFound {len(papers)} papers for query '{query}':")
-        for i, paper in enumerate(papers, 1):
-            print(f"\n{i}. {paper.title}")
-            print(f"   Authors: {', '.join(paper.authors)}")
-            print(f"   Citations: {paper.citations}")
-            print(f"   URL: {paper.url}")
-    except Exception as e:
-        print(f"Error during search: {e}")
+    asyncio.run(main())

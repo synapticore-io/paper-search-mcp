@@ -8,7 +8,7 @@ import hashlib
 import logging
 from typing import Optional
 
-import requests
+import httpx
 from bs4 import BeautifulSoup
 
 
@@ -20,8 +20,7 @@ class SciHubFetcher:
         self.base_url = base_url.rstrip("/")
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.session = requests.Session()
-        self.session.headers = {
+        self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
@@ -31,7 +30,7 @@ class SciHubFetcher:
             'Upgrade-Insecure-Requests': '1',
         }
 
-    def download_pdf(self, identifier: str) -> Optional[str]:
+    async def download_pdf(self, identifier: str) -> Optional[str]:
         """Download a PDF from Sci-Hub using a DOI, PMID, or URL.
 
         Args:
@@ -45,36 +44,37 @@ class SciHubFetcher:
 
         try:
             # Get direct URL to PDF
-            pdf_url = self._get_direct_url(identifier)
+            pdf_url = await self._get_direct_url(identifier)
             if not pdf_url:
                 logging.error(f"Could not find PDF URL for identifier: {identifier}")
                 return None
 
             # Download the PDF
-            response = self.session.get(pdf_url, verify=False, timeout=30)
-            
-            if response.status_code != 200:
-                logging.error(f"Failed to download PDF, status {response.status_code}")
-                return None
-
-            if response.headers.get('Content-Type') != 'application/pdf':
-                logging.error("Response is not a PDF")
-                return None
-
-            # Generate filename and save
-            filename = self._generate_filename(response, identifier)
-            file_path = self.output_dir / filename
-            
-            with open(file_path, 'wb') as f:
-                f.write(response.content)
+            async with httpx.AsyncClient(verify=False) as client:
+                response = await client.get(pdf_url, timeout=30)
                 
-            return str(file_path)
+                if response.status_code != 200:
+                    logging.error(f"Failed to download PDF, status {response.status_code}")
+                    return None
+
+                if response.headers.get('Content-Type') != 'application/pdf':
+                    logging.error("Response is not a PDF")
+                    return None
+
+                # Generate filename and save
+                filename = self._generate_filename(response, identifier)
+                file_path = self.output_dir / filename
+                
+                with open(file_path, 'wb') as f:
+                    f.write(response.content)
+                    
+                return str(file_path)
 
         except Exception as e:
             logging.error(f"Error downloading PDF for {identifier}: {e}")
             return None
 
-    def _get_direct_url(self, identifier: str) -> Optional[str]:
+    async def _get_direct_url(self, identifier: str) -> Optional[str]:
         """Get the direct PDF URL from Sci-Hub."""
         try:
             # If it's already a direct PDF URL, return it
@@ -83,12 +83,14 @@ class SciHubFetcher:
 
             # Search on Sci-Hub
             search_url = f"{self.base_url}/{identifier}"
-            response = self.session.get(search_url, verify=False, timeout=20)
             
-            if response.status_code != 200:
-                return None
+            async with httpx.AsyncClient(verify=False) as client:
+                response = await client.get(search_url, timeout=20)
+                
+                if response.status_code != 200:
+                    return None
 
-            soup = BeautifulSoup(response.content, 'html.parser')
+                soup = BeautifulSoup(response.content, 'html.parser')
             
             # Check for article not found
             if "article not found" in response.text.lower():
@@ -158,7 +160,7 @@ class SciHubFetcher:
             logging.error(f"Error getting direct URL for {identifier}: {e}")
             return None
 
-    def _generate_filename(self, response: requests.Response, identifier: str) -> str:
+    def _generate_filename(self, response, identifier: str) -> str:
         """Generate a unique filename for the PDF."""
         # Try to get filename from URL
         url_parts = response.url.split('/')

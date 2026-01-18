@@ -1,7 +1,7 @@
 # paper_search_mcp/academic_platforms/crossref.py
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-import requests
+import httpx
 import time
 import random
 from ..paper import Paper
@@ -29,13 +29,12 @@ class CrossRefSearcher(PaperSource):
     USER_AGENT = "paper-search-mcp/0.1.3 (https://github.com/Dragonatorul/paper-search-mcp; mailto:paper-search@example.org)"
     
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
+        self.headers = {
             'User-Agent': self.USER_AGENT,
             'Accept': 'application/json'
-        })
+        }
     
-    def search(self, query: str, max_results: int = 10, **kwargs) -> List[Paper]:
+    async def search(self, query: str, max_results: int = 10, **kwargs) -> List[Paper]:
         """
         Search CrossRef database for papers.
         
@@ -67,16 +66,18 @@ class CrossRefSearcher(PaperSource):
             params['mailto'] = 'paper-search@example.org'
             
             url = f"{self.BASE_URL}/works"
-            response = self.session.get(url, params=params, timeout=30)
             
-            if response.status_code == 429:
-                # Rate limited - wait and retry once
-                logger.warning("Rate limited by CrossRef API, waiting 2 seconds...")
-                time.sleep(2)
-                response = self.session.get(url, params=params, timeout=30)
-            
-            response.raise_for_status()
-            data = response.json()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, params=params, timeout=30, headers=self.headers)
+                
+                if response.status_code == 429:
+                    # Rate limited - wait and retry once
+                    logger.warning("Rate limited by CrossRef API, waiting 2 seconds...")
+                    time.sleep(2)
+                    response = await client.get(url, params=params, timeout=30, headers=self.headers)
+                
+                response.raise_for_status()
+                data = response.json()
             
             papers = []
             items = data.get('message', {}).get('items', [])
@@ -92,7 +93,7 @@ class CrossRefSearcher(PaperSource):
                     
             return papers
             
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Error searching CrossRef: {e}")
             return []
         except Exception as e:
@@ -269,7 +270,7 @@ class CrossRefSearcher(PaperSource):
                   "To access the full text, please use the paper's DOI or URL to visit the publisher's website.")
         return message
 
-    def get_paper_by_doi(self, doi: str) -> Optional[Paper]:
+    async def get_paper_by_doi(self, doi: str) -> Optional[Paper]:
         """
         Get a specific paper by DOI.
         
@@ -283,19 +284,20 @@ class CrossRefSearcher(PaperSource):
             url = f"{self.BASE_URL}/works/{doi}"
             params = {'mailto': 'paper-search@example.org'}
             
-            response = self.session.get(url, params=params, timeout=30)
-            
-            if response.status_code == 404:
-                logger.warning(f"DOI not found in CrossRef: {doi}")
-                return None
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, params=params, timeout=30, headers=self.headers)
                 
-            response.raise_for_status()
-            data = response.json()
-            
-            item = data.get('message', {})
-            return self._parse_crossref_item(item)
-            
-        except requests.RequestException as e:
+                if response.status_code == 404:
+                    logger.warning(f"DOI not found in CrossRef: {doi}")
+                    return None
+                    
+                response.raise_for_status()
+                data = response.json()
+                
+                item = data.get('message', {})
+                return self._parse_crossref_item(item)
+                
+        except httpx.HTTPError as e:
             logger.error(f"Error fetching DOI {doi} from CrossRef: {e}")
             return None
         except Exception as e:
@@ -303,58 +305,63 @@ class CrossRefSearcher(PaperSource):
             return None
 
 if __name__ == "__main__":
-    # Test CrossRefSearcher functionality
-    # 测试CrossRefSearcher功能
-    searcher = CrossRefSearcher()
+    import asyncio
     
-    # Test search functionality
-    # 测试搜索功能
-    print("Testing search functionality...")
-    query = "machine learning"
-    max_results = 5
-    papers = []
-    try:
-        papers = searcher.search(query, max_results=max_results)
-        print(f"Found {len(papers)} papers for query '{query}':")
-        for i, paper in enumerate(papers, 1):
-            print(f"{i}. {paper.title} (DOI: {paper.doi})")
-            print(f"   Authors: {', '.join(paper.authors[:3])}{'...' if len(paper.authors) > 3 else ''}")
-            print(f"   Published: {paper.published_date.year}")
-            print(f"   Citations: {paper.citations}")
-            publisher = paper.extra.get('publisher', 'N/A') if paper.extra else 'N/A'
-            print(f"   Publisher: {publisher}")
-            print()
-    except Exception as e:
-        print(f"Error during search: {e}")
-    
-    # Test DOI lookup functionality
-    # 测试DOI查找功能
-    if papers:
-        print("Testing DOI lookup functionality...")
-        test_doi = papers[0].doi
+    async def main():
+        # Test CrossRefSearcher functionality
+        # 测试CrossRefSearcher功能
+        searcher = CrossRefSearcher()
+        
+        # Test search functionality
+        # 测试搜索功能
+        print("Testing search functionality...")
+        query = "machine learning"
+        max_results = 5
+        papers = []
         try:
-            paper = searcher.get_paper_by_doi(test_doi)
-            if paper:
-                print(f"Successfully retrieved paper by DOI: {paper.title}")
-            else:
-                print("Failed to retrieve paper by DOI")
+            papers = await searcher.search(query, max_results=max_results)
+            print(f"Found {len(papers)} papers for query '{query}':")
+            for i, paper in enumerate(papers, 1):
+                print(f"{i}. {paper.title} (DOI: {paper.doi})")
+                print(f"   Authors: {', '.join(paper.authors[:3])}{'...' if len(paper.authors) > 3 else ''}")
+                print(f"   Published: {paper.published_date.year}")
+                print(f"   Citations: {paper.citations}")
+                publisher = paper.extra.get('publisher', 'N/A') if paper.extra else 'N/A'
+                print(f"   Publisher: {publisher}")
+                print()
         except Exception as e:
-            print(f"Error during DOI lookup: {e}")
+            print(f"Error during search: {e}")
+        
+        # Test DOI lookup functionality
+        # 测试DOI查找功能
+        if papers:
+            print("Testing DOI lookup functionality...")
+            test_doi = papers[0].doi
+            try:
+                paper = await searcher.get_paper_by_doi(test_doi)
+                if paper:
+                    print(f"Successfully retrieved paper by DOI: {paper.title}")
+                else:
+                    print("Failed to retrieve paper by DOI")
+            except Exception as e:
+                print(f"Error during DOI lookup: {e}")
+        
+        # Test PDF download functionality (will return unsupported message)
+        # 测试PDF下载功能（会返回不支持的提示）
+        if papers:
+            print("\nTesting PDF download functionality...")
+            paper_id = papers[0].doi
+            try:
+                pdf_path = searcher.download_pdf(paper_id, "./downloads")
+            except NotImplementedError as e:
+                print(f"Expected error: {e}")
+        
+        # Test paper reading functionality (will return unsupported message)
+        # 测试论文阅读功能（会返回不支持的提示）
+        if papers:
+            print("\nTesting paper reading functionality...")
+            paper_id = papers[0].doi
+            message = searcher.read_paper(paper_id)
+            print(f"Message: {message}")
     
-    # Test PDF download functionality (will return unsupported message)
-    # 测试PDF下载功能（会返回不支持的提示）
-    if papers:
-        print("\nTesting PDF download functionality...")
-        paper_id = papers[0].doi
-        try:
-            pdf_path = searcher.download_pdf(paper_id, "./downloads")
-        except NotImplementedError as e:
-            print(f"Expected error: {e}")
-    
-    # Test paper reading functionality (will return unsupported message)
-    # 测试论文阅读功能（会返回不支持的提示）
-    if papers:
-        print("\nTesting paper reading functionality...")
-        paper_id = papers[0].doi
-        message = searcher.read_paper(paper_id)
-        print(f"Message: {message}")
+    asyncio.run(main())

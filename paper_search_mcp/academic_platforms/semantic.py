@@ -1,6 +1,6 @@
 from typing import List, Optional
 from datetime import datetime
-import requests
+import httpx
 from bs4 import BeautifulSoup
 import time
 import random
@@ -38,18 +38,11 @@ class SemanticSearcher(PaperSource):
     ]
 
     def __init__(self):
-        self._setup_session()
-
-    def _setup_session(self):
-        """Initialize session with random user agent"""
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": random.choice(self.BROWSERS),
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9",
-            }
-        )
+        self.headers = {
+            "User-Agent": random.choice(self.BROWSERS),
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
 
     def _parse_date(self, date_str: str) -> Optional[datetime]:
         """Parse date from Semantic Scholar format (e.g., '2025-06-02')"""
@@ -156,7 +149,7 @@ class SemanticSearcher(PaperSource):
             return None
         return api_key.strip()
     
-    def request_api(self, path: str, params: dict) -> dict:
+    async def request_api(self, path: str, params: dict) -> dict:
         """
         Make a request to the Semantic Scholar API with optional API key.
         """
@@ -166,25 +159,29 @@ class SemanticSearcher(PaperSource):
         for attempt in range(max_retries):
             try:
                 api_key = self.get_api_key()
-                headers = {"x-api-key": api_key} if api_key else {}
+                headers = self.headers.copy()
+                if api_key:
+                    headers["x-api-key"] = api_key
                 url = f"{self.SEMANTIC_BASE_URL}/{path}"
-                response = self.session.get(url, params=params, headers=headers)
                 
-                # 检查是否是429错误（限流）
-                if response.status_code == 429:
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)  # 指数退避
-                        logger.warning(f"Rate limited (429). Waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        logger.error(f"Rate limited (429) after {max_retries} attempts. Please wait before making more requests.")
-                        return {"error": "rate_limited", "status_code": 429, "message": "Too many requests. Please wait before retrying."}
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(url, params=params, headers=headers)
+                    
+                    # 检查是否是429错误（限流）
+                    if response.status_code == 429:
+                        if attempt < max_retries - 1:
+                            wait_time = retry_delay * (2 ** attempt)  # 指数退避
+                            logger.warning(f"Rate limited (429). Waiting {wait_time} seconds before retry {attempt + 1}/{max_retries}")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            logger.error(f"Rate limited (429) after {max_retries} attempts. Please wait before making more requests.")
+                            return {"error": "rate_limited", "status_code": 429, "message": "Too many requests. Please wait before retrying."}
+                    
+                    response.raise_for_status()
+                    return response
                 
-                response.raise_for_status()
-                return response
-                
-            except requests.exceptions.HTTPError as e:
+            except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
                     if attempt < max_retries - 1:
                         wait_time = retry_delay * (2 ** attempt)
@@ -203,7 +200,7 @@ class SemanticSearcher(PaperSource):
         
         return {"error": "max_retries_exceeded", "message": "Maximum retry attempts exceeded"}
 
-    def search(self, query: str, year: Optional[str] = None, max_results: int = 10) -> List[Paper]:
+    async def search(self, query: str, year: Optional[str] = None, max_results: int = 10) -> List[Paper]:
         """
         Search Semantic Scholar
 
@@ -232,7 +229,7 @@ class SemanticSearcher(PaperSource):
             if year:
                 params["year"] = year
             # Make request
-            response = self.request_api("paper/search", params)
+            response = await self.request_api("paper/search", params)
             
             # Check for errors
             if isinstance(response, dict) and "error" in response:
@@ -271,7 +268,7 @@ class SemanticSearcher(PaperSource):
 
         return papers[:max_results]
 
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
+    async def download_pdf(self, paper_id: str, save_path: str) -> str:
         """
         Download PDF from Semantic Scholar
 
@@ -291,27 +288,29 @@ class SemanticSearcher(PaperSource):
             str: Path to downloaded file or error message
         """
         try:
-            paper = self.get_paper_details(paper_id)
+            paper = await self.get_paper_details(paper_id)
             if not paper or not paper.pdf_url:
                 return f"Error: Could not find PDF URL for paper {paper_id}"
             pdf_url = paper.pdf_url
-            pdf_response = requests.get(pdf_url, timeout=30)
-            pdf_response.raise_for_status()
             
-            # Create download directory if it doesn't exist
-            os.makedirs(save_path, exist_ok=True)
-            
-            filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
-            
-            with open(pdf_path, "wb") as f:
-                f.write(pdf_response.content)
-            return pdf_path
+            async with httpx.AsyncClient() as client:
+                pdf_response = await client.get(pdf_url, timeout=30)
+                pdf_response.raise_for_status()
+                
+                # Create download directory if it doesn't exist
+                os.makedirs(save_path, exist_ok=True)
+                
+                filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
+                pdf_path = os.path.join(save_path, filename)
+                
+                with open(pdf_path, "wb") as f:
+                    f.write(pdf_response.content)
+                return pdf_path
         except Exception as e:
             logger.error(f"PDF download error: {e}")
             return f"Error downloading PDF: {e}"
 
-    def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
+    async def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """
         Download and extract text from Semantic Scholar paper PDF
 
@@ -332,63 +331,64 @@ class SemanticSearcher(PaperSource):
         """
         try:
             # First get paper details to get the PDF URL
-            paper = self.get_paper_details(paper_id)
+            paper = await self.get_paper_details(paper_id)
             if not paper or not paper.pdf_url:
                 return f"Error: Could not find PDF URL for paper {paper_id}"
 
             # Download the PDF
-            pdf_response = requests.get(paper.pdf_url, timeout=30)
-            pdf_response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                pdf_response = await client.get(paper.pdf_url, timeout=30)
+                pdf_response.raise_for_status()
 
-            # Create download directory if it doesn't exist
-            os.makedirs(save_path, exist_ok=True)
+                # Create download directory if it doesn't exist
+                os.makedirs(save_path, exist_ok=True)
 
-            # Save the PDF
-            filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
+                # Save the PDF
+                filename = f"semantic_{paper_id.replace('/', '_')}.pdf"
+                pdf_path = os.path.join(save_path, filename)
 
-            with open(pdf_path, "wb") as f:
-                f.write(pdf_response.content)
+                with open(pdf_path, "wb") as f:
+                    f.write(pdf_response.content)
 
-            # Extract text using PyPDF2
-            reader = PdfReader(pdf_path)
-            text = ""
+                # Extract text using PyPDF2
+                reader = PdfReader(pdf_path)
+                text = ""
 
-            for page_num, page in enumerate(reader.pages):
-                try:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += f"\n--- Page {page_num + 1} ---\n"
-                        text += page_text + "\n"
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to extract text from page {page_num + 1}: {e}"
+                for page_num, page in enumerate(reader.pages):
+                    try:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += f"\n--- Page {page_num + 1} ---\n"
+                            text += page_text + "\n"
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to extract text from page {page_num + 1}: {e}"
+                        )
+                        continue
+
+                if not text.strip():
+                    return (
+                        f"PDF downloaded to {pdf_path}, but unable to extract readable text"
                     )
-                    continue
 
-            if not text.strip():
-                return (
-                    f"PDF downloaded to {pdf_path}, but unable to extract readable text"
-                )
+                # Add paper metadata at the beginning
+                metadata = f"Title: {paper.title}\n"
+                metadata += f"Authors: {', '.join(paper.authors)}\n"
+                metadata += f"Published Date: {paper.published_date}\n"
+                metadata += f"URL: {paper.url}\n"
+                metadata += f"PDF downloaded to: {pdf_path}\n"
+                metadata += "=" * 80 + "\n\n"
 
-            # Add paper metadata at the beginning
-            metadata = f"Title: {paper.title}\n"
-            metadata += f"Authors: {', '.join(paper.authors)}\n"
-            metadata += f"Published Date: {paper.published_date}\n"
-            metadata += f"URL: {paper.url}\n"
-            metadata += f"PDF downloaded to: {pdf_path}\n"
-            metadata += "=" * 80 + "\n\n"
+                return metadata + text.strip()
 
-            return metadata + text.strip()
-
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Error downloading PDF: {e}")
             return f"Error downloading PDF: {e}"
         except Exception as e:
             logger.error(f"Read paper error: {e}")
             return f"Error reading paper: {e}"
 
-    def get_paper_details(self, paper_id: str) -> Optional[Paper]:
+    async def get_paper_details(self, paper_id: str) -> Optional[Paper]:
         """
         Fetch detailed information for a specific Semantic Scholar paper
 
@@ -412,7 +412,7 @@ class SemanticSearcher(PaperSource):
                 "fields": ",".join(fields),
             }
             
-            response = self.request_api(f"paper/{paper_id}", params)
+            response = await self.request_api(f"paper/{paper_id}", params)
             
             # Check for errors
             if isinstance(response, dict) and "error" in response:
@@ -441,55 +441,60 @@ class SemanticSearcher(PaperSource):
 
 
 if __name__ == "__main__":
-    # Test Semantic searcher
-    searcher = SemanticSearcher()
+    import asyncio
+    
+    async def main():
+        # Test Semantic searcher
+        searcher = SemanticSearcher()
 
-    print("Testing Semantic search functionality...")
-    query = "secret sharing"
-    max_results = 2
+        print("Testing Semantic search functionality...")
+        query = "secret sharing"
+        max_results = 2
 
-    print("\n" + "=" * 60)
-    print("1. Testing search with detailed information")
-    print("=" * 60)
-    try:
-        papers = searcher.search(query, year=None, max_results=max_results)
-        print(f"\nFound {len(papers)} papers for query '{query}' (with details):")
-        for i, paper in enumerate(papers, 1):
-            print(f"\n{i}. {paper.title}")
-            print(f"   Paper ID: {paper.paper_id}")
-            print(f"   Authors: {', '.join(paper.authors)}")
-            print(f"   Categories: {', '.join(paper.categories)}")
-            print(f"   URL: {paper.url}")
-            if paper.pdf_url:
-                print(f"   PDF: {paper.pdf_url}")
-            if paper.published_date:
-                print(f"   Published Date: {paper.published_date}")
-            if paper.abstract:
-                print(f"   Abstract: {paper.abstract[:200]}...")
-    except Exception as e:
-        print(f"Error during detailed search: {e}")
+        print("\n" + "=" * 60)
+        print("1. Testing search with detailed information")
+        print("=" * 60)
+        try:
+            papers = await searcher.search(query, year=None, max_results=max_results)
+            print(f"\nFound {len(papers)} papers for query '{query}' (with details):")
+            for i, paper in enumerate(papers, 1):
+                print(f"\n{i}. {paper.title}")
+                print(f"   Paper ID: {paper.paper_id}")
+                print(f"   Authors: {', '.join(paper.authors)}")
+                print(f"   Categories: {', '.join(paper.categories)}")
+                print(f"   URL: {paper.url}")
+                if paper.pdf_url:
+                    print(f"   PDF: {paper.pdf_url}")
+                if paper.published_date:
+                    print(f"   Published Date: {paper.published_date}")
+                if paper.abstract:
+                    print(f"   Abstract: {paper.abstract[:200]}...")
+        except Exception as e:
+            print(f"Error during detailed search: {e}")
 
-    print("\n" + "=" * 60)
-    print("2. Testing manual paper details fetching")
-    print("=" * 60)
-    test_paper_id = "5bbfdf2e62f0508c65ba6de9c72fe2066fd98138"
-    try:
-        paper_details = searcher.get_paper_details(test_paper_id)
-        if paper_details:
-            print(f"\nManual fetch for paper {test_paper_id}:")
-            print(f"Title: {paper_details.title}")
-            print(f"Authors: {', '.join(paper_details.authors)}")
-            print(f"Categories: {', '.join(paper_details.categories)}")
-            print(f"URL: {paper_details.url}")
-            if paper_details.pdf_url:
-                print(f"PDF: {paper_details.pdf_url}")
-            if paper_details.published_date:
-                print(f"Published Date: {paper_details.published_date}")
-            print(f"DOI: {paper_details.doi}")
-            print(f"Citations: {paper_details.citations}")
-            print(f"Abstract: {paper_details.abstract[:200]}...")
-        else:
-            print(f"Could not fetch details for paper {test_paper_id}")
-    except Exception as e:
-        print(f"Error fetching paper details: {e}")
+        print("\n" + "=" * 60)
+        print("2. Testing manual paper details fetching")
+        print("=" * 60)
+        test_paper_id = "5bbfdf2e62f0508c65ba6de9c72fe2066fd98138"
+        try:
+            paper_details = await searcher.get_paper_details(test_paper_id)
+            if paper_details:
+                print(f"\nManual fetch for paper {test_paper_id}:")
+                print(f"Title: {paper_details.title}")
+                print(f"Authors: {', '.join(paper_details.authors)}")
+                print(f"Categories: {', '.join(paper_details.categories)}")
+                print(f"URL: {paper_details.url}")
+                if paper_details.pdf_url:
+                    print(f"PDF: {paper_details.pdf_url}")
+                if paper_details.published_date:
+                    print(f"Published Date: {paper_details.published_date}")
+                print(f"DOI: {paper_details.doi}")
+                print(f"Citations: {paper_details.citations}")
+                print(f"Abstract: {paper_details.abstract[:200]}...")
+            else:
+                print(f"Could not fetch details for paper {test_paper_id}")
+        except Exception as e:
+            print(f"Error fetching paper details: {e}")
+    
+    asyncio.run(main())
     

@@ -1,6 +1,6 @@
 from typing import List, Optional
 from datetime import datetime
-import requests
+import httpx
 from bs4 import BeautifulSoup
 import time
 import random
@@ -37,18 +37,11 @@ class IACRSearcher(PaperSource):
     ]
 
     def __init__(self):
-        self._setup_session()
-
-    def _setup_session(self):
-        """Initialize session with random user agent"""
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "User-Agent": random.choice(self.BROWSERS),
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9",
-            }
-        )
+        self.headers = {
+            "User-Agent": random.choice(self.BROWSERS),
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
 
     def _parse_date(self, date_str: str) -> Optional[datetime]:
         """Parse date from IACR format (e.g., '2025-06-02')"""
@@ -76,7 +69,8 @@ class IACRSearcher(PaperSource):
             if fetch_details:
                 # Fetch detailed information for this paper
                 logger.info(f"Fetching detailed info for paper {paper_id}")
-                detailed_paper = self.get_paper_details(paper_id)
+                import asyncio
+                detailed_paper = asyncio.run(self.get_paper_details(paper_id))
                 if detailed_paper:
                     return detailed_paper
                 else:
@@ -150,7 +144,7 @@ class IACRSearcher(PaperSource):
             logger.warning(f"Failed to parse IACR paper: {e}")
             return None
 
-    def search(
+    async def search(
         self, query: str, max_results: int = 10, fetch_details: bool = True
     ) -> List[Paper]:
         """
@@ -171,38 +165,36 @@ class IACRSearcher(PaperSource):
             params = {"q": query}
 
             # Make request
-            response = self.session.get(self.IACR_SEARCH_URL, params=params)
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.IACR_SEARCH_URL, params=params, headers=self.headers)
+                response.raise_for_status()
 
-            if response.status_code != 200:
-                logger.error(f"IACR search failed with status {response.status_code}")
-                return papers
+                # Parse results
+                soup = BeautifulSoup(response.text, "html.parser")
 
-            # Parse results
-            soup = BeautifulSoup(response.text, "html.parser")
+                # Find all paper entries - they are divs with class "mb-4"
+                results = soup.find_all("div", class_="mb-4")
 
-            # Find all paper entries - they are divs with class "mb-4"
-            results = soup.find_all("div", class_="mb-4")
+                if not results:
+                    logger.info("No results found for the query")
+                    return papers
 
-            if not results:
-                logger.info("No results found for the query")
-                return papers
+                # Process each result
+                for i, item in enumerate(results):
+                    if len(papers) >= max_results:
+                        break
 
-            # Process each result
-            for i, item in enumerate(results):
-                if len(papers) >= max_results:
-                    break
-
-                logger.info(f"Processing paper {i+1}/{min(len(results), max_results)}")
-                paper = self._parse_paper(item, fetch_details=fetch_details)
-                if paper:
-                    papers.append(paper)
+                    logger.info(f"Processing paper {i+1}/{min(len(results), max_results)}")
+                    paper = self._parse_paper(item, fetch_details=fetch_details)
+                    if paper:
+                        papers.append(paper)
 
         except Exception as e:
             logger.error(f"IACR search error: {e}")
 
         return papers[:max_results]
 
-    def download_pdf(self, paper_id: str, save_path: str) -> str:
+    async def download_pdf(self, paper_id: str, save_path: str) -> str:
         """
         Download PDF from IACR ePrint Archive
 
@@ -216,21 +208,20 @@ class IACRSearcher(PaperSource):
         try:
             pdf_url = f"{self.IACR_BASE_URL}/{paper_id}.pdf"
 
-            response = self.session.get(pdf_url)
+            async with httpx.AsyncClient() as client:
+                response = await client.get(pdf_url, headers=self.headers)
+                response.raise_for_status()
 
-            if response.status_code == 200:
                 filename = f"{save_path}/iacr_{paper_id.replace('/', '_')}.pdf"
                 with open(filename, "wb") as f:
                     f.write(response.content)
                 return filename
-            else:
-                return f"Failed to download PDF: HTTP {response.status_code}"
 
         except Exception as e:
             logger.error(f"PDF download error: {e}")
             return f"Error downloading PDF: {e}"
 
-    def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
+    async def read_paper(self, paper_id: str, save_path: str = "./downloads") -> str:
         """
         Download and extract text from IACR paper PDF
 
@@ -243,63 +234,64 @@ class IACRSearcher(PaperSource):
         """
         try:
             # First get paper details to get the PDF URL
-            paper = self.get_paper_details(paper_id)
+            paper = await self.get_paper_details(paper_id)
             if not paper or not paper.pdf_url:
                 return f"Error: Could not find PDF URL for paper {paper_id}"
 
             # Download the PDF
-            pdf_response = requests.get(paper.pdf_url, timeout=30)
-            pdf_response.raise_for_status()
+            async with httpx.AsyncClient() as client:
+                pdf_response = await client.get(paper.pdf_url, timeout=30)
+                pdf_response.raise_for_status()
 
-            # Create download directory if it doesn't exist
-            os.makedirs(save_path, exist_ok=True)
+                # Create download directory if it doesn't exist
+                os.makedirs(save_path, exist_ok=True)
 
-            # Save the PDF
-            filename = f"iacr_{paper_id.replace('/', '_')}.pdf"
-            pdf_path = os.path.join(save_path, filename)
+                # Save the PDF
+                filename = f"iacr_{paper_id.replace('/', '_')}.pdf"
+                pdf_path = os.path.join(save_path, filename)
 
-            with open(pdf_path, "wb") as f:
-                f.write(pdf_response.content)
+                with open(pdf_path, "wb") as f:
+                    f.write(pdf_response.content)
 
-            # Extract text using PyPDF2
-            reader = PdfReader(pdf_path)
-            text = ""
+                # Extract text using PyPDF2
+                reader = PdfReader(pdf_path)
+                text = ""
 
-            for page_num, page in enumerate(reader.pages):
-                try:
-                    page_text = page.extract_text()
-                    if page_text:
-                        text += f"\n--- Page {page_num + 1} ---\n"
-                        text += page_text + "\n"
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to extract text from page {page_num + 1}: {e}"
+                for page_num, page in enumerate(reader.pages):
+                    try:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += f"\n--- Page {page_num + 1} ---\n"
+                            text += page_text + "\n"
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to extract text from page {page_num + 1}: {e}"
+                        )
+                        continue
+
+                if not text.strip():
+                    return (
+                        f"PDF downloaded to {pdf_path}, but unable to extract readable text"
                     )
-                    continue
 
-            if not text.strip():
-                return (
-                    f"PDF downloaded to {pdf_path}, but unable to extract readable text"
-                )
+                # Add paper metadata at the beginning
+                metadata = f"Title: {paper.title}\n"
+                metadata += f"Authors: {', '.join(paper.authors)}\n"
+                metadata += f"Published Date: {paper.published_date}\n"
+                metadata += f"URL: {paper.url}\n"
+                metadata += f"PDF downloaded to: {pdf_path}\n"
+                metadata += "=" * 80 + "\n\n"
 
-            # Add paper metadata at the beginning
-            metadata = f"Title: {paper.title}\n"
-            metadata += f"Authors: {', '.join(paper.authors)}\n"
-            metadata += f"Published Date: {paper.published_date}\n"
-            metadata += f"URL: {paper.url}\n"
-            metadata += f"PDF downloaded to: {pdf_path}\n"
-            metadata += "=" * 80 + "\n\n"
+                return metadata + text.strip()
 
-            return metadata + text.strip()
-
-        except requests.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Error downloading PDF: {e}")
             return f"Error downloading PDF: {e}"
         except Exception as e:
             logger.error(f"Read paper error: {e}")
             return f"Error reading paper: {e}"
 
-    def get_paper_details(self, paper_id: str) -> Optional[Paper]:
+    async def get_paper_details(self, paper_id: str) -> Optional[Paper]:
         """
         Fetch detailed information for a specific IACR paper
 
@@ -321,16 +313,12 @@ class IACRSearcher(PaperSource):
                 paper_url = f"{self.IACR_BASE_URL}/{paper_id}"
 
             # Make request
-            response = self.session.get(paper_url)
+            async with httpx.AsyncClient() as client:
+                response = await client.get(paper_url, headers=self.headers)
+                response.raise_for_status()
 
-            if response.status_code != 200:
-                logger.error(
-                    f"Failed to fetch paper details: HTTP {response.status_code}"
-                )
-                return None
-
-            # Parse the page
-            soup = BeautifulSoup(response.text, "html.parser")
+                # Parse the page
+                soup = BeautifulSoup(response.text, "html.parser")
 
             # Extract title from h3 element
             title = ""
@@ -435,75 +423,80 @@ class IACRSearcher(PaperSource):
 
 
 if __name__ == "__main__":
-    # Test IACR searcher
-    searcher = IACRSearcher()
+    import asyncio
+    
+    async def main():
+        # Test IACR searcher
+        searcher = IACRSearcher()
 
-    print("Testing IACR search functionality...")
-    query = "secret sharing"
-    max_results = 2
+        print("Testing IACR search functionality...")
+        query = "secret sharing"
+        max_results = 2
 
-    print("\n" + "=" * 60)
-    print("1. Testing search with detailed information (slower but complete)")
-    print("=" * 60)
-    try:
-        papers = searcher.search(query, max_results=max_results, fetch_details=True)
-        print(f"\nFound {len(papers)} papers for query '{query}' (with details):")
-        for i, paper in enumerate(papers, 1):
-            print(f"\n{i}. {paper.title}")
-            print(f"   Paper ID: {paper.paper_id}")
-            print(f"   Authors: {', '.join(paper.authors)}")
-            print(f"   Categories: {', '.join(paper.categories)}")
-            print(f"   Keywords: {', '.join(paper.keywords)}")
-            print(f"   Last Updated: {paper.updated_date}")
-            print(f"   URL: {paper.url}")
-            print(f"   PDF: {paper.pdf_url}")
-            if paper.abstract:
-                print(f"   Abstract: {paper.abstract[:200]}...")
-            if paper.extra:
-                pub_info = paper.extra.get("publication_info", "")
-                if pub_info:
-                    print(f"   Publication Info: {pub_info}")
-    except Exception as e:
-        print(f"Error during detailed search: {e}")
+        print("\n" + "=" * 60)
+        print("1. Testing search with detailed information (slower but complete)")
+        print("=" * 60)
+        try:
+            papers = await searcher.search(query, max_results=max_results, fetch_details=True)
+            print(f"\nFound {len(papers)} papers for query '{query}' (with details):")
+            for i, paper in enumerate(papers, 1):
+                print(f"\n{i}. {paper.title}")
+                print(f"   Paper ID: {paper.paper_id}")
+                print(f"   Authors: {', '.join(paper.authors)}")
+                print(f"   Categories: {', '.join(paper.categories)}")
+                print(f"   Keywords: {', '.join(paper.keywords)}")
+                print(f"   Last Updated: {paper.updated_date}")
+                print(f"   URL: {paper.url}")
+                print(f"   PDF: {paper.pdf_url}")
+                if paper.abstract:
+                    print(f"   Abstract: {paper.abstract[:200]}...")
+                if paper.extra:
+                    pub_info = paper.extra.get("publication_info", "")
+                    if pub_info:
+                        print(f"   Publication Info: {pub_info}")
+        except Exception as e:
+            print(f"Error during detailed search: {e}")
 
-    print("\n" + "=" * 60)
-    print("2. Testing search with compact information only (faster)")
-    print("=" * 60)
-    try:
-        papers_compact = searcher.search(
-            query, max_results=max_results, fetch_details=False
-        )
-        print(f"\nFound {len(papers_compact)} papers for query '{query}' (compact):")
-        for i, paper in enumerate(papers_compact, 1):
-            print(f"\n{i}. {paper.title}")
-            print(f"   Paper ID: {paper.paper_id}")
-            print(f"   Authors: {', '.join(paper.authors)}")
-            print(f"   Categories: {', '.join(paper.categories)}")
-            print(f"   Keywords: {', '.join(paper.keywords)} (from search)")
-            if paper.abstract:
-                print(f"   Abstract: {paper.abstract[:150]}...")
-    except Exception as e:
-        print(f"Error during compact search: {e}")
-
-    print("\n" + "=" * 60)
-    print("3. Testing manual paper details fetching")
-    print("=" * 60)
-    test_paper_id = "2009/101"
-    try:
-        paper_details = searcher.get_paper_details(test_paper_id)
-        if paper_details:
-            print(f"\nManual fetch for paper {test_paper_id}:")
-            print(f"Title: {paper_details.title}")
-            print(f"Authors: {', '.join(paper_details.authors)}")
-            print(f"Keywords: {', '.join(paper_details.keywords)}")
-            print(
-                f"Publication Info: {paper_details.extra.get('publication_info', 'N/A') if paper_details.extra else 'N/A'}"
+        print("\n" + "=" * 60)
+        print("2. Testing search with compact information only (faster)")
+        print("=" * 60)
+        try:
+            papers_compact = await searcher.search(
+                query, max_results=max_results, fetch_details=False
             )
-            print(
-                f"History: {paper_details.extra.get('history', 'N/A') if paper_details.extra else 'N/A'}"
-            )
-            print(f"Abstract: {paper_details.abstract[:200]}...")
-        else:
-            print(f"Could not fetch details for paper {test_paper_id}")
-    except Exception as e:
-        print(f"Error fetching paper details: {e}")
+            print(f"\nFound {len(papers_compact)} papers for query '{query}' (compact):")
+            for i, paper in enumerate(papers_compact, 1):
+                print(f"\n{i}. {paper.title}")
+                print(f"   Paper ID: {paper.paper_id}")
+                print(f"   Authors: {', '.join(paper.authors)}")
+                print(f"   Categories: {', '.join(paper.categories)}")
+                print(f"   Keywords: {', '.join(paper.keywords)} (from search)")
+                if paper.abstract:
+                    print(f"   Abstract: {paper.abstract[:150]}...")
+        except Exception as e:
+            print(f"Error during compact search: {e}")
+
+        print("\n" + "=" * 60)
+        print("3. Testing manual paper details fetching")
+        print("=" * 60)
+        test_paper_id = "2009/101"
+        try:
+            paper_details = await searcher.get_paper_details(test_paper_id)
+            if paper_details:
+                print(f"\nManual fetch for paper {test_paper_id}:")
+                print(f"Title: {paper_details.title}")
+                print(f"Authors: {', '.join(paper_details.authors)}")
+                print(f"Keywords: {', '.join(paper_details.keywords)}")
+                print(
+                    f"Publication Info: {paper_details.extra.get('publication_info', 'N/A') if paper_details.extra else 'N/A'}"
+                )
+                print(
+                    f"History: {paper_details.extra.get('history', 'N/A') if paper_details.extra else 'N/A'}"
+                )
+                print(f"Abstract: {paper_details.abstract[:200]}...")
+            else:
+                print(f"Could not fetch details for paper {test_paper_id}")
+        except Exception as e:
+            print(f"Error fetching paper details: {e}")
+    
+    asyncio.run(main())
