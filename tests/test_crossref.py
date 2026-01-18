@@ -1,5 +1,6 @@
 # tests/test_crossref.py
 import unittest
+import asyncio
 import os
 import requests
 from paper_search_mcp.academic_platforms.crossref import CrossRefSearcher
@@ -27,7 +28,7 @@ class TestCrossRefSearcher(unittest.TestCase):
         if not self.api_accessible:
             self.skipTest("CrossRef API is not accessible")
         
-        papers = self.searcher.search("machine learning", max_results=5)
+        papers = asyncio.run(self.searcher.search("machine learning", max_results=5))
         print(f"Found {len(papers)} papers for query 'machine learning':")
         for i, paper in enumerate(papers, 1):
             print(f"{i}. {paper.title} (DOI: {paper.doi})")
@@ -48,11 +49,11 @@ class TestCrossRefSearcher(unittest.TestCase):
             self.skipTest("CrossRef API is not accessible")
             
         # Test search with date filter
-        papers = self.searcher.search(
+        papers = asyncio.run(self.searcher.search(
             "artificial intelligence", 
             max_results=3,
             filter="from-pub-date:2020,has-full-text:true"
-        )
+        ))
         print(f"Found {len(papers)} papers with filters")
         self.assertTrue(len(papers) >= 0)  # May return 0 if no papers match filters
 
@@ -93,7 +94,7 @@ class TestCrossRefSearcher(unittest.TestCase):
 
     def test_search_error_handling(self):
         # Test with invalid search parameters to check error handling
-        papers = self.searcher.search("", max_results=0)  # Empty query
+        papers = asyncio.run(self.searcher.search("", max_results=0))  # Empty query
         self.assertEqual(len(papers), 0)
 
     def test_user_agent_header(self):

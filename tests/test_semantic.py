@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 import os
 import requests
 from paper_search_mcp.academic_platforms.semantic import SemanticSearcher
@@ -28,7 +29,7 @@ class TestSemanticSearcher(unittest.TestCase):
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_search_basic(self):
         """Test basic search functionality"""
-        results = self.searcher.search("secret sharing", max_results=3)
+        results = asyncio.run(self.searcher.search("secret sharing", max_results=3))
 
         self.assertIsInstance(results, list)
         self.assertLessEqual(len(results), 3)
@@ -45,13 +46,13 @@ class TestSemanticSearcher(unittest.TestCase):
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_search_empty_query(self):
         """Test search with empty query"""
-        results = self.searcher.search("", max_results=3)
+        results = asyncio.run(self.searcher.search("", max_results=3))
         self.assertIsInstance(results, list)
 
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
     def test_search_max_results(self):
         """Test max_results parameter"""
-        results = self.searcher.search("cryptography", max_results=2)
+        results = asyncio.run(self.searcher.search("cryptography", max_results=2))
         self.assertLessEqual(len(results), 2)
 
     @unittest.skipUnless(check_semantic_accessible(), "Semantic Scholar not accessible")
@@ -203,9 +204,9 @@ class TestSemanticSearcher(unittest.TestCase):
         """Test search functionality with fetch_details parameter"""
         # Test with fetch_details=True (detailed information)
         print("\nTesting search with fetch_details=True")
-        detailed_papers = self.searcher.search(
+        detailed_papers = asyncio.run(self.searcher.search(
             "cryptography", max_results=2, fetch_details=True
-        )
+        ))
 
         self.assertIsInstance(detailed_papers, list)
         self.assertLessEqual(len(detailed_papers), 2)
@@ -232,9 +233,9 @@ class TestSemanticSearcher(unittest.TestCase):
 
         # Test with fetch_details=False (compact information)
         print("\nTesting search with fetch_details=False")
-        compact_papers = self.searcher.search(
+        compact_papers = asyncio.run(self.searcher.search(
             "cryptography", max_results=2, fetch_details=False
-        )
+        ))
 
         self.assertIsInstance(compact_papers, list)
         self.assertLessEqual(len(compact_papers), 2)
@@ -259,9 +260,9 @@ class TestSemanticSearcher(unittest.TestCase):
         # Test detailed search time
         print("\nTesting detailed search performance...")
         start_time = time.time()
-        compact_papers = self.searcher.search(
+        compact_papers = asyncio.run(self.searcher.search(
             query, max_results=max_results
-        )
+        ))
         compact_time = time.time() - start_time
 
         print(

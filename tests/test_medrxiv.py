@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 import os
 import requests
 from paper_search_mcp.academic_platforms.medrxiv import MedRxivSearcher
@@ -25,7 +26,7 @@ class TestMedRxivSearcher(unittest.TestCase):
         if not self.api_accessible:
             self.skipTest("medRxiv API is not accessible")
         
-        papers = self.searcher.search("machine learning", max_results=10)
+        papers = asyncio.run(self.searcher.search("machine learning", max_results=10))
         print(f"Found {len(papers)} papers for query 'machine learning':")
         for i, paper in enumerate(papers, 1):
             print(f"{i}. {paper.title} (ID: {paper.paper_id})")
@@ -36,7 +37,7 @@ class TestMedRxivSearcher(unittest.TestCase):
         if not self.api_accessible:
             self.skipTest("medRxiv API is not accessible")
             
-        papers = self.searcher.search("machine learning", max_results=1)
+        papers = asyncio.run(self.searcher.search("machine learning", max_results=1))
         if not papers:
             self.skipTest("No papers found for testing download")
             

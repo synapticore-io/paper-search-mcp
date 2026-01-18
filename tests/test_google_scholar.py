@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 import os
 import requests
 from paper_search_mcp.academic_platforms.google_scholar import GoogleScholarSearcher
@@ -25,7 +26,7 @@ class TestGoogleScholarSearcher(unittest.TestCase):
         if not self.scholar_accessible:
             self.skipTest("Google Scholar is not accessible")
             
-        papers = self.searcher.search("machine learning", max_results=5)
+        papers = asyncio.run(self.searcher.search("machine learning", max_results=5))
         print(f"\nFound {len(papers)} papers for query 'machine learning':")
         for i, paper in enumerate(papers, 1):
             print(f"\n{i}. {paper.title}")

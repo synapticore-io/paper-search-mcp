@@ -1,10 +1,11 @@
 import unittest
+import asyncio
 from paper_search_mcp.academic_platforms.pubmed import PubMedSearcher
 
 class TestPubMedSearcher(unittest.TestCase):
     def test_search(self):
         searcher = PubMedSearcher()
-        papers = searcher.search("machine learning", max_results=10)
+        papers = asyncio.run(searcher.search("machine learning", max_results=10))
         print(f"Found {len(papers)} papers for query 'machine learning':")
         for i, paper in enumerate(papers, 1):
             print(f"{i}. {paper.title} (ID: {paper.paper_id})")

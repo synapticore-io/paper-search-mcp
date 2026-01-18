@@ -1,5 +1,6 @@
 # tests/test_sci_hub.py
 import unittest
+import asyncio
 import tempfile
 import shutil
 import os
@@ -47,10 +48,10 @@ class TestSciHubFetcher(unittest.TestCase):
 
     def test_download_pdf_empty_query(self):
         """Test download with empty query"""
-        result = self.fetcher.download_pdf("")
+        result = asyncio.run(self.fetcher.download_pdf(""))
         self.assertIsNone(result)
 
-        result = self.fetcher.download_pdf("   ")
+        result = asyncio.run(self.fetcher.download_pdf("   "))
         self.assertIsNone(result)
 
     @unittest.skipUnless(check_sci_hub_accessible(), "Sci-Hub not accessible")
@@ -69,7 +70,7 @@ class TestSciHubFetcher(unittest.TestCase):
         
         for doi in test_dois:
             print(f"\nTesting PDF download for DOI: {doi}")
-            result = self.fetcher.download_pdf(doi)
+            result = asyncio.run(self.fetcher.download_pdf(doi))
             
             if result:
                 # Download successful
@@ -97,7 +98,7 @@ class TestSciHubFetcher(unittest.TestCase):
         invalid_doi = "10.1234/invalid.doi.123456789"
         
         print(f"\nTesting download for invalid DOI: {invalid_doi}")
-        result = self.fetcher.download_pdf(invalid_doi)
+        result = asyncio.run(self.fetcher.download_pdf(invalid_doi))
         
         # Should return None for invalid DOI
         self.assertIsNone(result)
@@ -169,12 +170,12 @@ class TestSciHubFetcher(unittest.TestCase):
     def test_error_handling(self):
         """Test error handling for various scenarios"""
         # Test with clearly invalid/malformed identifier
-        result = self.fetcher.download_pdf("this-is-definitely-not-a-valid-doi-or-identifier-12345")
+        result = asyncio.run(self.fetcher.download_pdf("this-is-definitely-not-a-valid-doi-or-identifier-12345"))
         # Note: Sci-Hub might still return something, so we just check it doesn't crash
         self.assertIsInstance(result, (str, type(None)))
         
         # Test with empty string
-        result = self.fetcher.download_pdf("")
+        result = asyncio.run(self.fetcher.download_pdf(""))
         self.assertIsNone(result)
 
 
