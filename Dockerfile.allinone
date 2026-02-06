@@ -1,0 +1,82 @@
+# All-in-One: Paper Search MCP + SurrealDB + SearXNG + Valkey
+# Single image for simple deployment — docker run -p 3000:3000 -p 8080:8080
+
+FROM python:3.12-slim AS builder
+
+WORKDIR /build
+
+# Build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libffi-dev libssl-dev curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install paper-search-mcp
+COPY pyproject.toml README.md ./
+COPY paper_search_mcp ./paper_search_mcp
+RUN pip install --no-cache-dir --prefix=/install .
+
+# Install SearXNG
+RUN pip install --no-cache-dir --prefix=/install searxng uwsgi
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+
+FROM python:3.12-slim
+
+LABEL org.opencontainers.image.title="paper-search-mcp" \
+      org.opencontainers.image.description="Academic paper search MCP server with knowledge graph, document processing, and meta-search" \
+      org.opencontainers.image.source="https://github.com/synapticore-io/paper-search-cli"
+
+# System packages: supervisor + valkey (Redis-compatible)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl supervisor valkey-server \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install SurrealDB
+RUN curl -sSf https://install.surrealdb.com | sh -s -- --nightly \
+    && mv /root/.surrealdb/surreal /usr/local/bin/surreal \
+    || (curl -sSf https://install.surrealdb.com | sh \
+    && mv /root/.surrealdb/surreal /usr/local/bin/surreal) \
+    ; surreal version || true
+
+# Copy Python packages from builder
+COPY --from=builder /install/lib /usr/local/lib
+COPY --from=builder /install/bin /usr/local/bin
+
+# Copy application code
+WORKDIR /app
+COPY paper_search_mcp ./paper_search_mcp
+COPY README.md ./
+
+# Copy SearXNG settings
+COPY searxng/settings.yml /etc/searxng/settings.yml
+
+# Copy supervisor config and entrypoint
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Create data directories
+RUN mkdir -p /app/downloads /app/data /data/surrealdb /var/log/supervisor /run/valkey
+
+# Environment defaults
+ENV PYTHONUNBUFFERED=1 \
+    SURREALDB_URL=ws://127.0.0.1:8000/rpc \
+    SURREALDB_USER=root \
+    SURREALDB_PASS=root \
+    SURREALDB_NS=paper_search \
+    SURREALDB_DB=knowledge \
+    SEARXNG_URL=http://127.0.0.1:8080 \
+    SEARXNG_SECRET=auto \
+    SEMANTIC_SCHOLAR_API_KEY=""
+
+# Ports: MCP(3000) SurrealDB(8000) SearXNG(8080)
+EXPOSE 3000 8000 8080
+
+# Persistent volumes
+VOLUME ["/data/surrealdb", "/app/downloads"]
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz')" 2>/dev/null || exit 1
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
