@@ -101,15 +101,30 @@ Configure Claude Desktop (`claude_desktop_config.json`):
 npx -y @smithery/cli install @openags/paper-search-mcp --client claude
 ```
 
-### Docker (Full Stack)
+### Docker — All-in-One Image
+
+Everything in a single container (supervisord-managed):
 
 ```bash
 git clone https://github.com/synapticore-io/paper-search-cli.git
 cd paper-search-cli
-docker compose up -d
+docker build -f Dockerfile.allinone -t paper-search-mcp .
+docker run -d --name paper-search \
+  -p 3000:3000 -p 8080:8080 \
+  -v paper-search-data:/data/surrealdb \
+  -v paper-search-downloads:/app/downloads \
+  paper-search-mcp
 ```
 
-This starts SurrealDB, SearXNG, and the MCP server together.
+Starts SurrealDB, SearXNG, Valkey, and the MCP server — all in one container.
+
+### Docker — Compose (Multi-Container)
+
+If you prefer separate containers:
+
+```bash
+docker compose up -d
+```
 
 ### Development
 
