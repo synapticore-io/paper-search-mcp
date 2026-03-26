@@ -1,5 +1,7 @@
 # Paper Search MCP
 
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/N4N71WOHZ3)
+
 MCP server and CLI for academic paper search, download, and knowledge synthesis across 11 platforms — with SurrealDB knowledge graph, Docling document processing, and Docker-ready deployment.
 
 ![PyPI](https://img.shields.io/pypi/v/paper-search-mcp.svg) ![License](https://img.shields.io/badge/license-MIT-blue.svg) ![Python](https://img.shields.io/badge/python-3.10+-blue.svg)
